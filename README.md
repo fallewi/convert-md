@@ -1,42 +1,4 @@
-# Kubernetes Hardening Guidance
 
-National Security Agency Cybersecurity and Infrastructure Security Agency
-
-
-
-The information and opinions contained in this document are provided "as is" and without any warranties or guarantees. Reference herein to any specific commercial products, process, or service by trade name, trademark, manufacturer, or otherwise, does not necessarily constitute or imply its endorsement, recommendation, or favoring by the United States Government, and this guidance shall not be used for advertising or product endorsement purposes.
-
-**Trademark recognition**
-
-Kubernetes is a registered trademark of The Linux Foundation. ▪ SELinux is a registered trademark of the National Security Agency. ▪ AppArmor is a registered trademark of SUSE LLC. ▪ Windows and Hyper-V are registered trademarks of Microsoft Corporation. ▪ ETCD is a registered trademark of CoreOS, Inc. ▪ Syslog-ng is a registered trademark of One Identity Software International Designated Activity Company. ▪ Prometheus is a registered trademark of The Linux Foundation. ▪ Grafana is a registered trademark of Raintank, Inc. dba Grafana Labs ▪ Elasticsearch and ELK Stack are registered trademarks of Elasticsearch B.V.
-
-**Copyright recognition**
-
-Information, examples, and figures in this document are based on Kubernetes Documentation by The Kubernetes Authors, published under a Creative Commons Attribution 4.0 license.
-
-## Publication information
-
-**Author(s)**
-
-National Security Agency (NSA) Cybersecurity Directorate Endpoint Security
-
-Cybersecurity and Infrastructure Security Agency (CISA)
-
-**Contact information**
-
-Client Requirements / General Cybersecurity Inquiries:
-Cybersecurity Requirements Center, 410-854-4200, Cybersecurity_Requests@nsa.gov
-
-Media inquiries / Press Desk:
- Media Relations, 443-634-0721, MediaRelations@nsa.gov
-
-For incident response resources, contact CISA at CISAServiceDesk@cisa.dhs.gov.
-
-**Purpose**
-
-NSA and CISA developed this document in furtherance of their respective cybersecurity missions, including their responsibilities to develop and issue cybersecurity specifications and mitigations. This information may be shared broadly to reach all appropriate stakeholders.
-
-## Executive summary
 
 Kubernetes® is an open-source system that automates the deployment, scaling, and management of applications run in containers, and is often hosted in a cloud environment. Using this type of virtualized infrastructure can provide several flexibility and security benefits compared to traditional, monolithic software platforms. However, securely managing everything from microservices to the underlying infrastructure introduces other complexities. The hardening guidance detailed in this report is designed to help organizations handle associated risks and enjoy the benefits of using this technology.
 
