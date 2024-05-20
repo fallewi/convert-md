@@ -1,143 +1,364 @@
-# Credential Stuffing Prevention Cheat Sheet
+# How to Encrypt Kubernetes Secrets Using Sealed Secrets
 
 ## Introduction
 
-This cheatsheet covers defences against two common types of authentication-related attacks: credential stuffing and password spraying. Although these are separate, distinct attacks, in many cases the defences that would be implemented to protect against them are the same, and they would also be effective at protecting against brute-force attacks.  A summary of these different attacks is listed below:
+In this tutorial, you will learn how to deploy and `encrypt` generic `Kubernetes Secrets` using the [Sealed Secrets Controller](https://github.com/bitnami-labs/sealed-secrets).
 
-| Attack Type         | Description                                                  |
-| ------------------- | ------------------------------------------------------------ |
-| Brute Force         | Testing multiple passwords from dictionary or other source against a single account. |
-| Credential Stuffing | Testing username/password pairs obtained from the breach of another site. |
-| Password Spraying   | Testing a single weak password against a large number of different accounts. |
+What `Sealed Secrets` allows you to do is:
 
-## Multi-Factor Authentication
+- Store `encrypted` secrets in a `Git` repository (even in `public` ones).
+- Apply `GitOps` principles for `Kubernetes Secrets` as well ([Section 15 - Continuous Delivery using GitOps](../15-continuous-delivery-using-gitops/README.md) gives you more practical examples on this topic).
 
-[Multi-factor authentication (MFA)](Multifactor_Authentication_Cheat_Sheet.md) is by far the best defense against the majority of password-related attacks, including credential stuffing and password spraying, with analysis by Microsoft suggesting that it would have stopped [99.9% of account compromises](https://techcommunity.microsoft.com/t5/Azure-Active-Directory-Identity/Your-Pa-word-doesn-t-matter/ba-p/731984). As such, it should be implemented wherever possible. Historically, depending on the audience of the application, it may not have been practical or feasible to enforce the use of MFA, however with modern browsers and mobile devices now supporting FIDO2 Passkeys and other forms of MFA, it is attainable for most use cases.
+### Understanding How Sealed Secrets Work
 
-In order to balance security and usability, multi-factor authentication can be combined with other techniques to require the 2nd factor only in specific circumstances where there is reason to suspect that the login attempt may not be legitimate, such as a login from:
+The `Sealed Secrets Controller` creates generic (classic) `Kubernetes` secrets in your `DOKS` cluster, from sealed secrets manifests. Sealed secrets `decryption` happens `server side` only, so as long as the `DOKS` cluster is secured (`etcd` database, `RBAC` properly set), everything should be safe.
 
-- A new browser/device or IP address.
-- An unusual country or location.
-- Specific countries that are considered untrusted or typically do not contain users of a service.
-- An IP address that appears on known denylists or is associated with anonymization services, such as proxy or VPN services.
-- An IP address that has tried to login to multiple accounts.
-- A login attempt that appears to be scripted or from a bot rather than a human (i.e. large login volume sourced from a single IP or subnet).
+There are two components involved:
 
-Or an organization may choose to require MFA in the form of a "step-up" authentication for the above scenarios during a session combined with a request for a high risk activity such as:
+1. A client side utility called `kubeseal`, used for `encrypting` generic `Kubernetes` secrets. The `kubeseal` CLI uses `asymmetric crypto` to encrypt secrets that `only` the `Sealed Secrets Controller` can `decrypt`.
+2. A server side component called `Sealed Secrets Controller` which runs on your `DOKS` cluster, and takes care of `decrypting` sealed secrets objects for applications to use.
 
-- Large currency transactions
-- Privileged or Administrative configuration changes
+The real benefit comes when you use `Sealed Secrets` in a `GitOps` flow. After you `commit` the sealed secret `manifest` to your applications `Git` repository, the `Continuous Delivery` system (e.g. `Flux CD`) is notified about the change, and creates a `Sealed Secret` resource in your `DOKS` cluster. Then the `Sealed Secrets Controller` kicks in, and `decrypts` your sealed secret object back to the original `Kubernetes` secret. Next, applications can consume the secret as usual.
 
-Additionally, for enterprise applications, known trusted IP ranges could be added to an allowlist so that MFA is not required when users connect from these ranges.
+Compared to other solutions like `Vault`, Sealed Secrets lacks the following features:
 
-## Alternative Defenses
+- `Multiple` storage backend support (like `Consul`, `S3`, `Filesystem`, `SQL databases`, etc).
+- `Dynamic Secrets`: Sealed Secrets cannot create application credentials on `demand` for accessing other systems, like `S3` compatible storage (e.g. `DO Spaces`), and `automatically revoke credentials` later on, when the `lease` expires.
+- `Leasing` and `renewal` of secrets: Sealed Secrets doesn't provide a `client API` for `renewing leases`, nor does it provide a `lease` associated to each `secret`.
+- `Revoking` old keys/secrets: Sealed Secrets can `rotate` the encryption key `automatically`, but it's quite limited in this regard. **Old keys and secrets are not revoked automatically - you have to manually revoke the old key(s) and re-seal everything again.**
+- `Pluggable` architecture which extends existing functionality like, setting `ACLs` via `identity based access control` plugins (`Okta`, `AWS`, etc).
 
-Where it is not possible to implement MFA, there are many alternative defenses that can be used to protect against credential stuffing and password spraying. In isolation none of these are as effective as MFA, however multiple, layered defenses can provide a reasonable degree of protection. In many cases, these mechanisms will also protect against brute-force or password spraying attacks.
+Although `Vault` is more feature capable, it comes with a tradeoff: `increased complexity` and `costs` in terms of maintenance. Where `Sealed Secrets` really shines is: `simplicity` and `low` maintenance `overhead` and `costs`.
 
-Where an application has multiple user roles, it may be appropriate to implement different defenses for different roles. For example, it may not be feasible to enforce MFA for all users, but it should be possible to require that all administrators use it.
+For `enterprise` grade `production` or `HIPAA` compliant systems, `Vault` is definitely one of the best candidates. For `small` projects and `development` environments, `Sealed Secrets` will suffice in most of the cases.
 
-## Defense in Depth & Metrics
+After finishing this tutorial, you will be able to:
 
-While not a specific technique, it is important to implement defenses that consider the impact of individual defenses being defeated or otherwise failing.  As an example, client-side defenses, such as device fingerprinting or JavaScript challenges, may be spoofed or bypassed and other layers of defense should be implemented to account for this.
+- `Create` and deploy sealed `Kubernetes` secrets to your `DOKS` cluster.
+- `Manage` and `update` sealed secrets.
+- `Configure` sealed secrets `scope`.
 
-Additionally, each defense should generate volume metrics for use as a detective mechanism. Ideally the metrics will include both detected and mitigated attack volume and allow for filtering on fields such as IP address.  Monitoring and reporting on these metrics may identify defense failures or the presence of unidentified attacks, as well as the impact of new or improved defenses.
+### Sealed Secrets Controller Setup Overview
 
-Finally, when administration of different defenses is performed by multiple teams, care should be taken to ensure there is communication and coordination when separate teams are performing maintenance, deployment or otherwise modifying individual defenses.
+![Sealed Secrets Controller Setup Overview](assets/images/sealed_secrets_flow.png)
 
-### Secondary Passwords, PINs and Security Questions
+## Table of Contents
 
-As well as requiring a user to enter their password when authenticating, users can also be prompted to provide additional security information such as:
+- [Introduction](#introduction)
+  - [Understanding How Sealed Secrets Work](#understanding-how-sealed-secrets-work)
+  - [Sealed Secrets Controller Setup Overview](#sealed-secrets-controller-setup-overview)
+- [Prerequisites](#prerequisites)
+- [Step 1 - Installing the Sealed Secrets Controller](#step-1---installing-the-sealed-secrets-controller)
+- [Step 2 - Encrypting a Kubernetes Secret](#step-2---encrypting-a-kubernetes-secret)
+- [Step 3 - Managing Sealed Secrets](#step-3---managing-sealed-secrets)
+  - [Managing Existing Secrets](#managing-existing-secrets)
+  - [Updating Existing Secrets](#updating-existing-secrets)
+- [Step 4 - Sealed Secrets Controller Private Key Backup](#step-4---sealed-secrets-controller-private-key-backup)
+- [Security Best Practices](#security-best-practices)
+- [Conclusion](#conclusion)
+  - [Pros](#pros)
+  - [Cons](#cons)
+  - [Learn More](#learn-more)
 
-- A PIN
-- Specific characters from a secondary passwords or memorable word
-- Answers to [security questions](Choosing_and_Using_Security_Questions_Cheat_Sheet.md)
+## Prerequisites
 
-It must be emphasised that this **does not** constitute multi-factor authentication (as both factors are the same - something you know). However, it can still provide a useful layer of protection against both credential stuffing and password spraying where proper MFA can't be implemented.
+To complete this tutorial, you will need:
 
-### CAPTCHA
+1. A [Git](https://git-scm.com/downloads) client, to clone the `Starter Kit` repository.
+2. [Kubeseal](https://github.com/bitnami-labs/sealed-secrets/releases/tag/v0.18.1), for encrypting secrets and `Sealed Secrets Controller` interaction.
+3. [Helm](https://www.helms.sh), for managing `Sealed Secrets Controller` releases and upgrades.
+4. [Kubectl](https://kubernetes.io/docs/tasks/tools), for `Kubernetes` interaction.
 
-Requiring a user to solve a "Completely Automated Public Turing test to tell Computers and Humans Apart" (CAPTCHA) or similar puzzle for each login attempt can help to identify automated/bot attacks and help prevent automated login attempts, and may slow down credential stuffing or password spraying attacks.  However, CAPTCHAs are not perfect, and in many cases tools or services exist that can be used to break them with a reasonably high success rate.  Monitoring CAPTCHA solve rates may help identify impact to good users, as well as automated CAPTCHA breaking technology, possibly indicated by abnormally high solve rates.
+## Step 1 - Installing the Sealed Secrets Controller
 
-To improve usability, it may be desirable to only require the user solve a CAPTCHA when the login request is considered suspicious or high risk, using the same criteria discussed in the MFA section.
+In this step, you will learn how to deploy the `Sealed Secrets Controller` using `Helm`. The chart of interest is called `sealed-secrets` and it's provided by the `bitnami-labs` repository.
 
-### IP Mitigation and Intelligence
+First, clone the `Starter Kit` Git repository, and change directory to your local copy:
 
-Blocking IP addresses may be sufficent to stop less sophisticated attacks, but should not be used as the primary defense due to the ease in circumvention.  It is more effective to have a graduated response to abuse that leverages multiple defensive measures depending on different factors of the attack.
+```shell
+git clone https://github.com/digitalocean/Kubernetes-Starter-Kit-Developers.git
 
-Any process or decision to mitigate (including blocking and CAPTCHA) credential stuffing traffic from an IP address should consider a multitude of abuse scenarios, and not rely on a single predictable volume limit.  Short (i.e. burst) and long time periods should be considered, as well as high request volume and instances where one IP address, likely in concert with _many_ other IP addresses, generates low but consistent volumes of traffic.  Additionally, mitigation decisions should consider factors such as IP address classification (ex: residential vs hosting) and geolocation.  These factors may be leveraged to raise or lower mitigation thresholds in order to reduce potential impact on legitimate users or more aggresively mitigate abuse originating from abnormal sources.  Mitigations, especially blocking an IP address, should be temporary and processes should be in place to remove an IP address from a mitigated state as abuse declines or stops.
+cd Kubernetes-Starter-Kit-Developers
+```
 
-Many credential stuffing toolkits, such as [Sentry MBA](https://federalnewsnetwork.com/wp-content/uploads/2020/06/Shape-Threat-Research-Automating-Cybercrime-with-SentryMBA.pdf), offer built-in use of proxy networks to distribute requests across a large volume of unique IP addressess.  This may defeat both IP block-lists and rate limiting, as per IP request volume may remain relatively low, even on high volume attacks.  Correlating authentication traffic with proxy and similar IP address intelligence, as well as hosting provider IP address ranges can help identify highly distributed credential stuffing attacks, as well as serve as a mitigation trigger.  For example, every request originating from a hosting provider could be required to solve CAPTCHA.
+Then, add the sealed secrets `bitnami-labs` repository for `Helm`:
 
-There are both public and commercial sources of IP address intelligence and classification that may be leveraged as data sources for this purpose.  Additionally, some hosting providers publish their own IP address space, such as [AWS](https://docs.aws.amazon.com/vpc/latest/userguide/aws-ip-ranges.html).
+```shell
+helm repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets
+```
 
-Separate from blocking network connections, consider storing an account's IP address authentication history.  In case a recent IP address is added to a block or mitigation list, it may be appropriate to lock the account and notify the user.
+Next, update the `sealed-secrets` chart repository:
 
-### Device Fingerprinting
+```shell
+helm repo update sealed-secrets
+```
 
-Aside from the IP address, there are a number of different factors that can be used to attempt to fingerprint a device. Some of these can be obtained passively by the server from the HTTP headers (particularly the "User-Agent" header), including:
+Next, search the `sealed-secrets` repository for available charts to install:
 
-- Operating system & version
-- Browser & version
-- Language
+```shell
+helm search repo sealed-secrets
+```
 
-Using JavaScript it is possible to access far more information, such as:
+The output looks similar to:
 
-- Screen resolution
-- Installed fonts
-- Installed browser plugins
+```text
+NAME                            CHART VERSION   APP VERSION     DESCRIPTION
+sealed-secrets/sealed-secrets   2.4.0           v0.18.1         Helm chart for the sealed-secrets controller.
+```
 
-Using these various attributes, it is possible to create a fingerprint of the device. This fingerprint can then be matched against any browser attempting to login to the account, and if it doesn't match then the user can be prompted for additional authentication. Many users will have multiple devices or browsers that they use, so it is not practical to simply block attempts that do not match the existing fingerprints, however it is common to define a process for users or customers to view their device history and manage their remembered devices.  Also these attributes can be used to detect anomalous activity such as a device appearing to be running an older version of OS or Browser.
+Now, open and inspect the `06-kubernetes-secrets/assets/manifests/sealed-secrets-values-v2.4.0.yaml` file provided in the `Starter kit` repository, using an editor of your choice (preferably with `YAML` lint support). You can use [VS Code](https://code.visualstudio.com), for example:
 
-The [fingerprintjs2](https://github.com/Valve/fingerprintjs2) JavaScript library can be used to carry out client-side fingerprinting.
+```shell
+code 06-kubernetes-secrets/assets/manifests/sealed-secrets-values-v2.4.0.yaml
+```
 
-It should be noted that as all this information is provided by the client, it can potentially be spoofed by an attacker. In some cases spoofing these attributes is trivial (such as the "User-Agent") header, but in other cases it may be more difficult to modify these attributes.
+Next, install the `sealed-secrets/sealed-secrets` chart, using `Helm` (notice that a dedicated `sealed-secrets` namespace is created as well):
 
-### Connection Fingerprinting
+```shell
+HELM_CHART_VERSION="2.4.0"
 
-Similar to device fingerprinting, there are numerous fingerprinting techniques available for network connections.  Some examples include [JA3](https://github.com/salesforce/ja3), HTTP/2 fingerprinting and HTTP header order.  As these techniques typically focus on how a connection is made, connection fingerprinting may provide more accurate results than other defenses that rely on an indicator, such as an IP address, or request data, such as user agent string.
+helm install sealed-secrets-controller sealed-secrets/sealed-secrets --version "${HELM_CHART_VERSION}" \
+  --namespace sealed-secrets \
+  --create-namespace \
+  -f "06-kubernetes-secrets/assets/manifests/sealed-secrets-values-v${HELM_CHART_VERSION}.yaml"
+```
 
-Connection fingerprinting may also be used in conjunction with other defenses to ascertain the truthfulness of an authentication request.  For example, if the user agent header and device fingerprint indicates a mobile device, but the connection fingerprint indicates a Python script, the request is likely suspect.
+**Notes:**
 
-### Require Unpredictable Usernames
+- A `specific` version for the `Helm` chart is used. In this case `2.4.0` is picked, which maps to the `0.18.1` version of the application. It’s good practice in general, to lock on a specific version. This helps to have predictable results, and allows versioning control via `Git`.
+- You will want to `restrict` access to the sealed-secrets `namespace` for other users that have access to your `DOKS` cluster, to prevent `unauthorized` access to the `private key` (e.g. use `RBAC` policies).
 
-Credential stuffing attacks rely on not just the re-use of passwords between multiple sites, but also the re-use of usernames. A significant number of websites use the email address as the username, and as most users will have a single email address they use for all their accounts, this makes the combination of an email address and password very effective for credential stuffing attacks.
+Next, list the deployment status for `Sealed Secrets` controller (the `STATUS` column value should be `deployed`):
 
-Requiring users to create their own username when registering on the website makes it harder for an attacker to obtain valid username and password pairs for credential stuffing, as many of the available credential lists only include email addresses. Providing the user with a generated username can provide a higher degree of protection (as users are likely to choose the same username on most websites), but is user unfriendly. Additionally, care needs to be taken to ensure that the generated username is not predictable (such as being based on the user's full name, or sequential numeric IDs), as this could make enumerating valid usernames for a password spraying attack easier.
+```shell
+helm ls -n sealed-secrets
+```
 
-### Multi-Step Login Processes
+The output looks similar to:
 
-The majority of off-the-shelf tools are designed for a single step login process, where the credentials are POSTed to the server, and the response indicates whether or not the login attempt was successful. By adding additional steps to this process, such as requiring the username and password to be entered sequentially, or requiring that the user first obtains a random [CSRF Token](Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.md) before they can login, this makes the attack slightly more difficult to perform, and doubles the number of requests that the attacker must make.
+```text
+NAME                            NAMESPACE       REVISION        UPDATED                                 STATUS          CHART                  APP VERSION
+sealed-secrets-controller       sealed-secrets  1               2021-10-04 18:25:03.594564 +0300 EEST   deployed        sealed-secrets-2.4.0   v0.18.1
+```
 
-Multi-step login processes, however, should be mindful that they do not faciliate [user enumeration](Authentication_Cheat_Sheet.md).  Enumerating users prior to a credential stuffing attack may result in a harder to identify, lower request volume attack.
+Finally, inspect the `Kubernetes` resources created by the `Sealed Secrets` Helm deployment:
 
-### Require JavaScript and Block Headless Browsers
+```shell
+kubectl get all -n sealed-secrets
+```
 
-Most tools used for these types of attacks will make direct POST requests to the server and read the responses, but will not download or execute JavaScript that was contained in them. By requiring the attacker to evaluate JavaScript in the response (for example to generate a valid token that must be submitted with the request), this forces the attacker to either use a real browser with an automation framework like Selenium or Headless Chrome, or to implement JavaScript parsing with another tool such as PhantomJS. Additionally, there are a number of techniques that can be used to identify [Headless Chrome](https://antoinevastel.com/bot%20detection/2018/01/17/detect-chrome-headless-v2.html) or [PhantomJS](https://blog.shapesecurity.com/2015/01/22/detecting-phantomjs-based-visitors/).
+The output looks similar to (notice the status of the `sealed-secrets-controller` pod and service - must be `UP` and `Running`):
 
-Please note that blocking visitors who have JavaScript disabled will reduce the accessibility of the website, especially to visitors who use screen readers. In certain jurisdictions this may be in breach of equalities legislation.
+```text
+NAME                                             READY   STATUS    RESTARTS   AGE
+pod/sealed-secrets-controller-7b649d967c-mrpqq   1/1     Running   0          2m19s
 
-### Degredation
+NAME                                TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+service/sealed-secrets-controller   ClusterIP   10.245.105.164   <none>        8080/TCP   2m20s
 
-A more aggresive defense against credential stuffing is to implement measures that increase the amount of time the attack takes to complete.  This may include incrementally increasing the complexity of the JavaScript that must be evaluated, introducing long wait periods before responding to requests, returning overly large HTML assets or returning randomized error messages.
+NAME                                        READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/sealed-secrets-controller   1/1     1            1           2m20s
 
-Due to their potential negative impact on legitimate users, great care must be taken with this type of defense, though it may be needed in order to mitigate more sophisticated credential stuffing attacks.
+NAME                                                   DESIRED   CURRENT   READY   AGE
+replicaset.apps/sealed-secrets-controller-7b649d967c   1         1         1       2m20s
+```
 
-### Identifying Leaked Passwords
+In the next step you will learn how to `seal` your `secrets`. Only `your DOKS` cluster can `decrypt` the sealed secrets, because it's the only one having the `private` key.
 
-[ASVS v4.0 Password Security Requirements](https://github.com/OWASP/ASVS/blob/master/4.0/en/0x11-V2-Authentication.md#v21-password-security-requirements) provision (2.1.7) on verifying new passwords presence in breached password datasets should be implemented.
+## Step 2 - Encrypting a Kubernetes Secret
 
-There are both commercial and free services that may be of use for validating passwords presence in prior breaches.  A well known free service for this is [Pwned Passwords](https://haveibeenpwned.com/Passwords). You can host a copy of the application yourself, or use the [API](https://haveibeenpwned.com/API/v2#PwnedPasswords).
+In this step, you will learn how to encrypt your generic `Kubernetes` secret, using `kubeseal` CLI. Then, you will deploy it to your `DOKS` cluster and see how the `Sealed Secrets` controller `decrypts` it for your applications to use.
 
-### Notify users about unusual security events
+Suppose that you need to seal a generic secret for your application, saved in the following file: `your-app-secret.yaml`. Notice the `your-data` field which is `base64` encoded (it's `vulnerable` to attacks, because it can be very easily `decoded` using free tools):
 
-When suspicious or unusual activity is detected, it may be appropriate to notify or warn the user. However, care should be taken that the user does not get overwhelmed with a large number of notifications that are not important to them, or they will just start to ignore or delete them.  Additionally, due to frequent reuse of passwords across multiple sites, the possibility that the users email account has also been compromised should be considered.
+```yaml
+apiVersion: v1
+data:
+  your-data: ZXh0cmFFbnZWYXJzOgogICAgRElHSVRBTE9DRUFOX1RPS0VOOg== # base64 encoded application data
+kind: Secret
+metadata:
+  name: your-app
+```
 
-For example, it would generally not be appropriate to notify a user that there had been an attempt to login to their account with an incorrect password. However, if there had been a login with the correct password, but which had then failed the subsequent MFA check, the user should be notified so that they can change their password.  Subsequently, should the user request multiple password resets from different devices or IP addresses, it may be appropriate to prevent further access to the account pending further user verification processes.
+First, you need to fetch the `public key` from the `Sealed Secrets Controller` (performed `only once` per cluster, and on each `fresh` install):
 
-Details related to current or recent logins should also be made visible to the user. For example, when they login to the application, the date, time and location of their previous login attempt could be displayed to them. Additionally, if the application supports concurrent sessions, the user should be able to view a list of all active sessions, and to terminate any other sessions that are not legitimate.
+```shell
+kubeseal --fetch-cert --controller-namespace=sealed-secrets > pub-sealed-secrets.pem
+```
 
-## References
+**Notes:**
 
-- [OWASP Credential Stuffing Article](https://owasp.org/www-community/attacks/Credential_stuffing)
-- [OWASP Automated Threats to Web Applications](https://owasp.org/www-project-automated-threats-to-web-applications/)
-- Project: [OAT-008 Credential Stuffing](https://owasp.org/www-community/attacks/Credential_stuffing), which is one of 20 defined threats in the [OWASP Automated Threat Handbook](https://owasp.org/www-pdf-archive/Automated-threat-handbook.pdf) this project produced.
+- If you deploy the `Sealed Secrets` controller to another namespace (defaults to `kube-system`), you need to specify to the `kubeseal` CLI the namespace, via the `--controller-namespace` flag.
+- The `public key` can be `safely` stored in a `Git` repository for example, or even given to the world. The encryption mechanism used by the `Sealed Secrets` controller cannot be reversed without the `private key` (stored in your `DOKS` cluster only).
+
+Next, create a `sealed` file from the `Kubernetes` secret, using the `pub-sealed-secrets.pem` key:
+
+```shell
+kubeseal --format=yaml \
+  --cert=pub-sealed-secrets.pem \
+  --secret-file your-app-secret.yaml \
+  --sealed-secret-file your-app-sealed.yaml
+```
+
+The file content looks similar to (notice the `your-data` field which is `encrypted` now, using a Bitnami `SealedSecret` object):
+
+```yaml
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  creationTimestamp: null
+  name: your-app
+  namespace: default
+spec:
+  encryptedData:
+    your-data: AgCFNTLd+KD2IGZo3YWbRgPsK1dEhxT3NwSCU2Inl8A6phhTwMxKSu82fu0LGf/AoYCB35xrdPl0sCwwB4HSXRZMl2WbL6HrA0DQNB1ov8DnnAVM+6TZFCKePkf9yqVIekr4VojhPYAvkXq8TEAxYslQ0ppNg6AlduUZbcfZgSDkMUBfaczjwb69BV8kBf5YXMRmfGtL3mh5CZA6AAK0Q9cFwT/gWEZQU7M1BOoMXUJrHG9p6hboqzyEIWg535j+14tNy1srAx6oaQeEKOW9fr7C6IZr8VOe2wRtHFWZGjCL3ulzFeNu5GG0FmFm/bdB7rFYUnUIrb2RShi1xvyNpaNDF+1BDuZgpyDPVO8crCc+r2ozDnkTo/sJhNdLDuYgIzoQU7g1yP4U6gYDTE+1zUK/b1Q+X2eTFwHQoli/IRSv5eP/EAVTU60QJklwza8qfHE9UjpsxgcrZnaxdXZz90NahoGPtdJkweoPd0/CIoaugx4QxbxaZ67nBgsVYAnikqc9pVs9VmX/Si24aA6oZbtmGzkc4b80yi+9ln7x/7/B0XmyLNLS2Sz0lnqVUN8sfvjmehpEBDjdErekSlQJ4xWEQQ9agdxz7WCSCgPJVnwA6B3GsnL5dleMObk7eGUj9DNMv4ETrvx/ZaS4bpjwS2TL9S5n9a6vx6my3VC3tLA5QAW+GBIfRD7/CwyGZnTJHtW5f6jlDWYS62LbFJKfI9hb8foR/XLvBhgxuiwfj7SjjAzpyAgq
+  template:
+    data: null
+    metadata:
+      creationTimestamp: null
+      name: your-app
+      namespace: default
+```
+
+**Note:**
+
+If you don't specify a `namespace`, the `default` one is assumed (use kubeseal `--namespace` flag, to change targeted namespace). Default `scope` used by `kubeseal` is `strict` - please refer to scopes in [Security Best Practices](#security-best-practices).
+
+Next, you can delete the `Kubernetes` secret file, because it's not needed anymore:
+
+```shell
+rm -f your-app-secret.yaml
+```
+
+Finally, `deploy` the `sealed secret` to your cluster:
+
+```shell
+kubectl apply -f your-app-sealed.yaml
+```
+
+Check that the `Sealed Secrets Controller` decrypted your `Kubernetes` secret in the `default` namespace:
+
+```shell
+kubectl get secrets
+```
+
+The output looks similar to:
+
+```text
+NAME                  TYPE                                  DATA   AGE
+your-app              Opaque                                1      31s
+```
+
+Inspect the secret:
+
+```shell
+kubectl get secret your-app -o yaml
+```
+
+The output looks similar to (`your-data` key `value` should be `decrypted` to the original `base64` encoded `value`):
+
+```yaml
+apiVersion: v1
+data:
+  your-data: ZXh0cmFFbnZWYXJzOgogICAgRElHSVRBTE9DRUFOX1RPS0VOOg==
+kind: Secret
+metadata:
+  creationTimestamp: "2021-10-05T08:34:07Z"
+  name: your-app
+  namespace: default
+  ownerReferences:
+  - apiVersion: bitnami.com/v1alpha1
+    controller: true
+    kind: SealedSecret
+    name: your-app
+    uid: f6475e74-78eb-4c6a-9f19-9d9ceee231d0
+  resourceVersion: "235947"
+  uid: 7b7d2fee-c48a-4b4c-8f16-2e58d25da804
+type: Opaque
+```
+
+## Step 3 - Managing Sealed Secrets
+
+### Managing Existing Secrets
+
+If you want `SealedSecret` controller to take management of an `existing` Secret (i.e. overwrite it when unsealing a SealedSecret with the same name and namespace), then you have to `annotate` that `Secret` with the annotation `sealedsecrets.bitnami.com/managed: "true"` ahead applying [Step 2 - Encrypting a Kubernetes Secret](#step-2---encrypting-a-kubernetes-secret).
+
+### Updating Existing Secrets
+
+If you want to `add` or `update` existing sealed secrets without having the cleartext for the other items, you can just `copy&paste` the new encrypted data items and `merge` it into an `existing` sealed secret.
+
+You must take care of sealing the updated items with a compatible `name` and `namespace` (see note about scopes above).
+
+You can use the `--merge-into` command to update an existing sealed secrets if you don't want to copy&paste:
+
+```shell
+echo -n bar | kubectl create secret generic mysecret --dry-run=client --from-file=foo=/dev/stdin -o json \
+  | kubeseal --controller-namespace=sealed-secrets > mysealedsecret.json
+
+echo -n baz | kubectl create secret generic mysecret --dry-run=client --from-file=bar=/dev/stdin -o json \
+  | kubeseal --controller-namespace=sealed-secrets --merge-into mysealedsecret.json
+```
+
+If using `VS Code` there's an extension that allows you to use the `GUI` mode to perform the above operations - [Kubeseal for vscode](https://marketplace.visualstudio.com/items?itemName=codecontemplator.kubeseal).
+
+## Step 4 - Sealed Secrets Controller Private Key Backup
+
+If you want to perform a `manual backup` of the private and public keys, you can do so via:
+
+```shell
+kubectl get secret -n sealed-secrets -l sealedsecrets.bitnami.com/sealed-secrets-key -o yaml > master.key
+```
+
+Then, store the `master.key` file somewhere safe. To restore from a backup after some disaster, just put that secrets back before starting the controller - or if the controller was already started, replace the newly-created secrets and restart the controller:
+
+```shell
+kubectl apply -f master.key
+
+kubectl delete pod -n sealed-secrets -l name=sealed-secrets-controller
+```
+
+Best approach is to perform regular backups for example, as you already learned in [Section 6 - Set up Backup and Restore](../06-setup-backup-restore/README.md). `Velero` or `Trilio` helps you to restore the `Sealed Secrets` controller state in case of a disaster as well (without the need to fetch the `master` key, and then `inserting` it back in the `cluster`).
+
+## Security Best Practices
+
+In terms of security, `Sealed Secrets` allows you to `restrict` other users to decrypt your sealed secrets inside the cluster. There are three `scopes` that you can use (`kubeseal` CLI `--scope` flag):
+
+1. `strict` (default): the secret must be sealed with `exactly` the same `name` and `namespace`. These `attributes` become `part` of the `encrypted data` and thus `changing name` and/or `namespace` would lead to **"decryption error"**.
+2. `namespace-wide`: you can freely `rename` the sealed secret within a given `namespace`.
+3. `cluster-wide`: the `secret` can be `unsealed` in any `namespace` and can be given any `name`.
+
+Next, you can apply some of the best practices highlighted below:
+
+- Make sure to change **both** `secrets` periodically (like passwords, tokens, etc), and the `private key` used for `encryption`. This way, if the `encryption key` is ever `leaked`, sensitive data doesn't get exposed. And even if it is, the secrets are not valid anymore. You can read more on the topic by referring to the [Secret Rotation](https://github.com/bitnami-labs/sealed-secrets#secret-rotation) chapter, from the official documentation.
+- You can leverage the power of `RBAC` for your `Kubernetes` cluster to `restrict` access to `namespaces`. So, if you store all your Kubernetes secrets in a `specific namespace`, then you can `restrict` access to `unwanted users` and `applications` for that `specific namespace`. This is important, because plain `Kubernetes Secrets` are `base64` encoded and can be `decoded` very easy by anyone. `Sealed Secrets` provides an `encryption` layer on top of `encoding`, but in your `DOKS` cluster sealed secrets are transformed back to `generic` Kubernetes secrets.
+- To avoid `private key leaks`, please make sure that the `namespace` where you deployed the `Sealed Secrets` controller is protected as well, via corresponding `RBAC` rules.
+
+## Conclusion
+
+In this tutorial, you learned how to use generic `Kubernetes secrets` in a `secure` way. You also learned that the `encryption key` is stored and secrets are `decrypted` in the `cluster` (the client doesn’t have access to the encryption key).
+
+Then, you discovered how to use `kubeseal` CLI, to generate `SealedSecret` manifests that hold sensitive content `encrypted`. After `applying` the sealed secrets manifest file to your `DOKS` cluster, the `Sealed Secrets Controller` will recognize it as a new sealed secret resource, and `decrypt` it to generic `Kubernetes Secret` resource.
+
+### Pros
+
+- `Lightweight`, meaning implementation and management costs are low.
+- `Transparent` integration with `Kubernetes Secrets`.
+- `Decryption` happens `server side` (DOKS cluster).
+- Works very well in a `GitOps` setup (`encrypted` files can be stored using `public Git` repositories).
+
+### Cons
+
+- For `each DOKS cluster` a separate `private` and `public key` pair needs to be `created` and `maintained`.
+- `Private keys` must be `backed` up (e.g. using `Velero`) for `disaster` recovery.
+- `Updating` and `re-sealing` secrets, as well as `adding` or `merging` new key/values is not quite straightforward.
+
+Even though there are some cons to using `Sealed Secrets`, the `ease` of `management` and `transparent` integration with `Kubernetes` and `GitOps` flows makes it a good candidate in practice.
+
+### Learn More
+
+- [Upgrade](https://github.com/bitnami-labs/sealed-secrets#upgrade) steps and notes.
+- [Sealed Secrets FAQ](https://github.com/bitnami-labs/sealed-secrets#faq), for frequently asked questions about `Sealed Secrets`.
+
+Next, you will learn how to automatically scale your application workloads based on external load (or traffic). You will learn how to leverage `metrics-server` as well as `Prometheus` via `prometheus-adapter` to do the job, and let the Kubernetes horizontal (or vertical) Pod autoscaling system take smart decisions.
+
+Go to [Section 7 - Scaling Application Workloads](../07-scaling-application-workloads/README.md).
